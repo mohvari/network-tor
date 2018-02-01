@@ -17,11 +17,11 @@ from .utils import log, PKEY_SERIALIZED_SIZE
 from math import ceil
 from .exception import *
 from .utils import bytes_to_key, key_to_bytes
-
+from struct import unpack_from
 URL_SIZE = 256
 MAX_HOPS = 5
 CHALLENGE_SIZE = 256
-
+HEADER_LEN = 1540
 
 class Header:
 
@@ -43,8 +43,18 @@ class Header:
         :param priv_key: rsa.PrivateKey - the receiver's private key for decrypting parts of the header
         :return: Header
         """
+        packet_length, = struct.unpack_from("!I", mbytes, 0)
+        hops_encrypted  = mbytes[4:]
+
+        hops_byte = rsa.decrypt(hops_encrypted, priv_key)
+        hops_list = []
+        for i in range (0, 5):
+            temp_hop = hops_byte[ (256 * i) : (256 * i + 256) ]
+            hops_list.append(temp_hop)
+        new_header = Header(packet_length, hops_list)
+        return new_header    # new header contains 5 hops and length of the packet
         # TODO this is filled by the student
-        pass
+        # pass
 
     def to_bytes(self, dest_pub_key):
         """
@@ -333,7 +343,53 @@ class Packet:
 
         :return: Packet - parsed packet
         """
-        pass
+        header_byte = mbytes[0:HEADER_LEN]
+        packet_header = Header()
+        packet_header = packet_header.from_bytes(header_byte, private_keys[0])
+        
+        body_length = packet_header.length - HEADER_LEN
+        body_byte = mbytes[HEADER_LEN :(HEADER_LEN + body_length)]
+        IsDecrypted = False
+        IsHidden = False
+        try:
+            temp_byte = rsa.decrypt(body_byte, private_keys[0])
+            flag = unpack_from('!B', temp_byte, 0)
+            body_byte = temp_byte[1:]
+            IsDecrypted = True
+        except rsa.DecryptionError:
+            if private_keys[1]:
+                try:
+                    temp_byte = rsa.decrypt(body_byte, private_keys[1])
+                    flag = unpack_from('!B', temp_byte, 0)
+                    body_byte = temp_byte[1:]
+                    IsDecrypted = True
+                    IsHidden = True
+                except rsa.DecryptionError:
+                    IsDecrypted = False
+            else:
+                IsDecrypted = False
+        
+        if not IsDecrypted: # body is RawPacketBody
+            packet_body = RawPacketBody(body_byte)
+
+        elif flag == 0: # body is DataPacketBody 
+            dest_pub = body_byte[0:256]
+            src_pub = body_byte[256:512]
+            data_encrypted = body_byte[512:]
+            packet_body = DataPacketBody(dest_pub, src_pub, data_encrypted)   
+
+        else: # body is RegisterPacketBody
+            src_pub = body_byte[0:256]
+            ret_hops = []
+            for i in range (1, 6):
+                tem_hop = body_byte[ (256 * i) : (256 * i + 256) ]
+                ret_hops.append(tem_hop)
+            chall_byte = body_byte[(256 * 6):]
+            packet_body = RegisterPacketBody(src_pub, ret_hops, chall_byte)
+        
+        parsed_packet = Packet(packet_header, packet_body)
+        return parsed_packet
+        # pass
 
     def to_bytes(self, next_hop_pk, dest_pk):
         """
